@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XyS Book — Administration</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
+  <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+  <section id="admin-login" class="admin-login">
+    <div class="auth-card" style="max-width:380px;margin:10vh auto">
+      <div class="center mb"><div class="logo">🛡️</div></div>
+      <h2 style="text-align:center;margin-bottom:14px">Administration XyS Book</h2>
+      <div id="al-msg" class="auth-msg"></div>
+      <form id="al-form" class="auth-form">
+        <input name="login" placeholder="Nom ou e-mail admin" required />
+        <input name="password" type="password" placeholder="Mot de passe" required />
+        <button class="btn btn-primary btn-block" type="submit">Accéder au tableau</button>
+      </form>
+      <p class="small muted center mt"><a href="/">← Retour à l'application</a></p>
+    </div>
+  </section>
+
+  <div id="admin-app" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <span class="logo logo-sm" style="font-size:18px">🛡️</span>
+        <b>Panneau administrateur</b>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" id="btn-refresh">↻ Actualiser</button>
+        <button class="btn btn-danger btn-sm" id="btn-logout">Déconnexion</button>
+      </div>
+    </header>
+    <div class="admin-body">
+      <nav class="admin-nav">
+        <button class="anav active" data-a="dashboard">📊 Vue d'ensemble</button>
+        <button class="anav" data-a="reports">🚩 Signalements</button>
+        <button class="anav" data-a="users">👥 Utilisateurs</button>
+        <button class="anav" data-a="posts">📄 Publications</button>
+        <button class="anav" data-a="comments">💬 Commentaires</button>
+        <button class="anav" data-a="logs">📜 Journal</button>
+      </nav>
+      <main id="admin-main" class="admin-main"></main>
+    </div>
+  </div>
+  <script src="admin.js"></script>
+</body>
+</html>

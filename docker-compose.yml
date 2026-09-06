@@ -1,0 +1,26 @@
+# ------------------------------------------------------------------
+# PostgreSQL local pour XyS Book Mondial
+#   docker compose up -d
+# Puis copie .env.example -> .env et ajuste DATABASE_URL.
+# ------------------------------------------------------------------
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: xys-book-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xys_user
+      POSTGRES_PASSWORD: xys_password
+      POSTGRES_DB: xys_book
+    ports:
+      - "5432:5432"
+    volumes:
+      - xys_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xys_user -d xys_book"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  xys_pgdata:

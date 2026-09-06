@@ -16,6 +16,9 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || '*';
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+// Mode « démo » : seul l'auto-rechargement de jetons SANS paiement réel est possible.
+// À DÉSACTIVER en production (aucun crédit sans vraie passerelle de paiement).
+const DEMO_TOPUP = String(process.env.DEMO_TOPUP || '').toLowerCase() === 'true';
 
 if (!JWT_SECRET) {
   console.error('ERREUR: ajoute JWT_SECRET dans les variables d’environnement.');
@@ -98,10 +101,20 @@ function safeText(value, max = 2000) {
   return String(value || '').trim().slice(0, max);
 }
 
+// Adresse IP fiable. Si TRUST_PROXY est activé, Express ne garde que la valeur
+// de X-Forwarded-For fournie par un saut proxy de confiance (req.ip). Sinon on
+// ignore l'en-tête (non fiable) et on utilise l'adresse de connexion réelle,
+// ce qui empêche un attaquant de se ré-attribuer un quota en envoyant
+// un faux en-tête X-Forwarded-For.
+function getClientIp(req) {
+  const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'ip';
+  return String(ip).replace(/^::ffff:/, '');
+}
+
 const rateStore = new Map();
 function rateLimit(name, max, windowMs) {
   return (req, res, next) => {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'ip';
+    const ip = getClientIp(req);
     const user = req.user?.id || 'anon';
     const key = `${name}:${user}:${ip}`;
     const now = Date.now();
@@ -113,11 +126,52 @@ function rateLimit(name, max, windowMs) {
     next();
   };
 }
+// Purge périodique des entrées expirées pour éviter la fuite mémoire.
+function pruneRateMap(map) {
+  const now = Date.now();
+  for (const [key, item] of map) {
+    if (item.reset < now) map.delete(key);
+  }
+}
+setInterval(() => pruneRateMap(rateStore), 10 * 60 * 1000);
+if (typeof setInterval !== 'undefined' && global.gc) { /* noop */ }
 const authLimiter = rateLimit('auth', 20, 15 * 60 * 1000);
 const postLimiter = rateLimit('post', 12, 60 * 1000);
 const commentLimiter = rateLimit('comment', 30, 60 * 1000);
 const reportLimiter = rateLimit('report', 10, 10 * 60 * 1000);
 const profileLimiter = rateLimit('profile', 20, 10 * 60 * 1000);
+const likeLimiter = rateLimit('like', 60, 60 * 1000);
+const blockLimiter = rateLimit('block', 40, 10 * 60 * 1000);
+const coinLimiter = rateLimit('coins', 5, 60 * 60 * 1000);
+const giftLimiter = rateLimit('gift', 20, 60 * 1000);
+
+// Catalogue de rechargement accepté (montant en FCFA => jetons crédités).
+// Une seule source de vérité côté serveur pour empêcher tout crédit arbitraire.
+const COIN_PACKAGES = [
+  { amount: 500, coins: 500 },
+  { amount: 1000, coins: 1100 },
+  { amount: 2000, coins: 2300 },
+  { amount: 5000, coins: 6000 },
+  { amount: 10000, coins: 12500 }
+];
+// Catalogue de cadeaux pour les directs : prix fixe par type (>= 1).
+const GIFT_CATALOG = {
+  rose: 10,
+  coeur: 25,
+  applaudissement: 50,
+  diamant: 100,
+  couronne: 500,
+  ferrari: 1000
+};
+
+// Validation simple mais stricte d'un e-mail.
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+// Mot de passe : au moins 8 caractères, avec au moins une lettre et un chiffre.
+function isStrongPassword(value) {
+  return typeof value === 'string' && value.length >= 8 && /[a-zA-Z]/.test(value) && /[0-9]/.test(value);
+}
 
 async function initDb() {
   await pool.query(`
@@ -157,6 +211,14 @@ async function initDb() {
     );
     ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT '';
     CREATE INDEX IF NOT EXISTS posts_created_at_idx ON posts (created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS post_likes (
+      post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (post_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS post_likes_user_idx ON post_likes (user_id);
 
     CREATE TABLE IF NOT EXISTS comments (
       id TEXT PRIMARY KEY,
@@ -287,9 +349,37 @@ async function applyAdminEmails() {
 function signToken(user) {
   return jwt.sign({ id: user.id, name: user.name, isAdmin: Boolean(user.isAdmin) }, JWT_SECRET, { expiresIn: '30d' });
 }
-async function authMiddleware(req, res, next) {
+
+// --- Authentification : en-tête Bearer OU cookie httpOnly ---
+function readCookies(req) {
+  const header = req.headers.cookie || '';
+  const out = {};
+  header.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx > -1) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      try { out[k] = decodeURIComponent(v); } catch (e) { out[k] = v; }
+    }
+  });
+  return out;
+}
+function getToken(req) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  return readCookies(req).xys_token || null;
+}
+function setAuthCookie(res, token) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie',
+    `xys_token=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax${secure}`);
+}
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', 'xys_token=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
+}
+
+async function authMiddleware(req, res, next) {
+  const token = getToken(req);
   if (!token) return res.status(401).json({ error: 'Token manquant' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -365,11 +455,39 @@ async function isBlocked(a, b) {
 }
 
 const app = express();
+
+// Configurer la confiance proxy AVANT tout usage de req.ip / rate-limit.
+// Requis quand l'application est derrière Render/nginx : X-Forwarded-For est
+// alors fiable. En l'absence de TRUST_PROXY, on n'honore pas l'en-tête (anti-spoofing).
+if (process.env.TRUST_PROXY) {
+  const tp = String(process.env.TRUST_PROXY).trim().toLowerCase();
+  if (tp === 'true') app.set('trust proxy', true);
+  else if (tp === '1') app.set('trust proxy', 1);
+  else if (!Number.isNaN(Number(tp))) app.set('trust proxy', Number(tp));
+}
+
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: originConfig } });
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: originConfig }));
+// helmet avec une CSP adaptée à la SPA (scripts uniquement depuis le serveur,
+// styles autorisant les attributs inline utilisés par l'interface).
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      'default-src': ["'self'"],
+      'script-src': ["'self'"],
+      'style-src': ["'self'", "'unsafe-inline'"],
+      'img-src': ["'self'", 'data:', 'blob:'],
+      'font-src': ["'self'", 'data:'],
+      'connect-src': ["'self'", 'ws:', 'wss:'],
+      'object-src': ["'none'"],
+      'base-uri': ["'self'"],
+      'form-action': ["'self'"]
+    }
+  }
+}));
+app.use(cors({ origin: originConfig, credentials: true }));
 app.use(express.json({ limit: '750kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -391,9 +509,12 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     const recoveryQuestion = safeText(req.body?.recoveryQuestion, 150) || 'Nom de ta ville de naissance ?';
     const recoveryAnswer = safeText(req.body?.recoveryAnswer, 100).toLowerCase();
 
-    if (!cleanName || !password) return res.status(400).json({ error: 'Nom et mot de passe obligatoires' });
+    if (!cleanName || !cleanEmail || !password) {
+      return res.status(400).json({ error: 'Nom, e-mail et mot de passe obligatoires' });
+    }
     if (cleanName.length < 2) return res.status(400).json({ error: 'Nom trop court' });
-    if (password.length < 6) return res.status(400).json({ error: 'Mot de passe: 6 caractères minimum' });
+    if (!isValidEmail(cleanEmail)) return res.status(400).json({ error: 'Adresse e-mail invalide' });
+    if (!isStrongPassword(password)) return res.status(400).json({ error: 'Mot de passe: 8 caractères minimum, avec une lettre et un chiffre' });
     if (!recoveryAnswer) return res.status(400).json({ error: 'Réponse de récupération obligatoire pour sécuriser le compte' });
 
     const exists = await pool.query(
@@ -413,11 +534,18 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     );
     const user = publicUser(result.rows[0]);
     io.emit('new-user', user);
-    res.json({ token: signToken(user), user });
+    const token = signToken(user);
+    setAuthCookie(res, token);
+    res.json({ token, user });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur inscription' });
   }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.json({ ok: true });
 });
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -434,7 +562,9 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
     if (row.is_suspended) return res.status(403).json({ error: 'Ce compte est suspendu' });
     const user = publicUser(row);
-    res.json({ token: signToken(user), user });
+    const token = signToken(user);
+    setAuthCookie(res, token);
+    res.json({ token, user });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur connexion' });
@@ -471,8 +601,8 @@ app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
     if (!userId || !answer || !newPassword) {
       return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Nouveau mot de passe: 6 caractères minimum' });
+    if (!isStrongPassword(newPassword)) {
+      return res.status(400).json({ error: 'Nouveau mot de passe: 8 caractères minimum, avec une lettre et un chiffre' });
     }
 
     const userRes = await pool.query('SELECT recovery_answer_hash FROM users WHERE id=$1', [userId]);
@@ -517,25 +647,11 @@ app.patch('/api/me', authMiddleware, profileLimiter, async (req, res) => {
   res.json({ user });
 });
 
+// Aucun auto-abonnement : un utilisateur ne peut pas s'octroyer premium/elite.
+// Seul un administrateur peut changer le niveau (ou un futur vrai flux de
+// paiement contrôlé côté serveur).
 app.patch('/api/me/subscription', authMiddleware, async (req, res) => {
-  try {
-    const tier = String(req.body?.subscriptionTier || 'standard').toLowerCase();
-    if (!['standard', 'premium', 'elite'].includes(tier)) {
-      return res.status(400).json({ error: 'Niveau d’abonnement invalide' });
-    }
-    const isPremium = (tier === 'premium' || tier === 'elite');
-    const result = await pool.query(
-      `UPDATE users SET subscription_tier=$1, is_premium=$2 WHERE id=$3 RETURNING id, name, email, country, avatar_url, is_admin, is_suspended, suspension_reason, is_premium, subscription_tier, coins, created_at`,
-      [tier, isPremium, req.user.id]
-    );
-    if (!result.rowCount) return res.status(404).json({ error: 'Utilisateur introuvable' });
-    const user = publicUser(result.rows[0]);
-    io.emit('profile-updated', user);
-    res.json({ user });
-  } catch (error) {
-    console.error('Erreur patch subscription:', error);
-    res.status(500).json({ error: 'Erreur lors de la modification de l’abonnement' });
-  }
+  res.status(403).json({ error: 'Impossible de changer soi-même d’abonnement. Contacte un administrateur.' });
 });
 
 app.get('/api/me/export', authMiddleware, profileLimiter, async (req, res) => {
@@ -796,7 +912,9 @@ app.post('/api/products', authMiddleware, postLimiter, async (req, res) => {
     const description = safeText(req.body?.description, 1000);
     const price = safeText(req.body?.price, 40);
     const imageUrl = String(req.body?.imageUrl || '').trim();
-    const isBoosted = Boolean(req.body?.isBoosted);
+    // Le « boost » d'un produit ne vient JAMAIS du client : il doit être payé ou
+    // octroyé par l'administrateur. On ignore donc toute valeur envoyée.
+    const isBoosted = false;
 
     if (!title || !description || !price) {
       return res.status(400).json({ error: 'Titre, description et prix obligatoires.' });
@@ -879,8 +997,10 @@ app.post('/api/stories', authMiddleware, postLimiter, async (req, res) => {
     const mediaUrl = String(req.body?.mediaUrl || '').trim();
 
     if (!mediaUrl) return res.status(400).json({ error: 'Média de la story obligatoire' });
-    if (mediaUrl.length > 550000) {
-      return res.status(400).json({ error: 'Story trop lourde. Choisissez un fichier plus petit.' });
+    // Seules des images embarquées (data:) sont acceptées : évite qu'une story
+    // pointe vers une URL externe (pistage du navigateur des lecteurs, XSS latent).
+    if (!mediaUrl.startsWith('data:image/') || mediaUrl.length > 550000) {
+      return res.status(400).json({ error: 'Story invalide. Choisissez une image plus petite.' });
     }
 
     const storyId = id();
@@ -952,15 +1072,25 @@ app.delete('/api/lives/:id', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/me/buy-coins', authMiddleware, async (req, res) => {
+app.post('/api/me/buy-coins', authMiddleware, coinLimiter, async (req, res) => {
   try {
     const amount = Number(req.body?.amount || 0);
     const coinsToCredit = Number(req.body?.coins || 0);
-    const paymentMethod = String(req.body?.paymentMethod || 'mtn_momo');
+    const paymentMethod = String(req.body?.paymentMethod || 'mtn_momo').trim();
     const phone = String(req.body?.phone || '').trim();
 
-    if (!coinsToCredit || !amount) {
-      return res.status(400).json({ error: 'Montant de rechargement invalide' });
+    // Uniquement un forfait du catalogue, montant == coin exactement.
+    const pkg = COIN_PACKAGES.find(p => p.amount === amount && p.coins === coinsToCredit);
+    if (!pkg) {
+      return res.status(400).json({ error: 'Forfait de rechargement invalide' });
+    }
+    if (!/^(mtn_momo|orange_money|moov_money|carte)$/.test(paymentMethod)) {
+      return res.status(400).json({ error: 'Moyen de paiement invalide' });
+    }
+    // Aucune passerelle de paiement n'étant branchée, le crédit de jetons est
+    // bloqué en production. Il n'est autorisé qu'en mode démo explicite.
+    if (!DEMO_TOPUP) {
+      return res.status(403).json({ error: 'Le paiement n’est pas configuré. Contacte l’administrateur.' });
     }
 
     const result = await pool.query(
@@ -983,15 +1113,22 @@ app.post('/api/me/buy-coins', authMiddleware, async (req, res) => {
 app.post('/api/lives/:id/gifts', authMiddleware, async (req, res) => {
   try {
     const liveId = req.params.id;
-    const giftType = String(req.body?.giftType || 'rose');
-    const giftPrice = Number(req.body?.giftPrice || 10);
-    const giftQty = Number(req.body?.giftQty || 1);
+    const giftType = String(req.body?.giftType || 'rose').trim();
+    const giftQty = Math.floor(Number(req.body?.giftQty) || 1);
+
+    // Le prix provient exclusivement du catalogue serveur (jamais du client).
+    const giftPrice = GIFT_CATALOG[giftType];
+    if (!giftPrice) return res.status(400).json({ error: 'Type de cadeau inconnu' });
+    if (!Number.isInteger(giftQty) || giftQty < 1 || giftQty > 100) {
+      return res.status(400).json({ error: 'Quantité de cadeaux invalide' });
+    }
+    const totalCost = giftPrice * giftQty;
 
     const viewerRes = await pool.query('SELECT coins FROM users WHERE id=$1', [req.user.id]);
     if (!viewerRes.rowCount) return res.status(404).json({ error: 'Utilisateur introuvable' });
     
     const currentCoins = Number(viewerRes.rows[0].coins);
-    if (currentCoins < giftPrice) {
+    if (currentCoins < totalCost) {
       return res.status(400).json({ error: 'Solde de jetons insuffisant. Veuillez recharger votre portefeuille.' });
     }
 
@@ -1003,14 +1140,18 @@ app.post('/api/lives/:id/gifts', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Vous ne pouvez pas vous envoyer un cadeau à vous-même.' });
     }
 
+    // Débit atomique : ne débite que si le solde couvre bien le total.
     const viewerUpdate = await pool.query(
-      `UPDATE users SET coins = coins - $1 WHERE id=$2 RETURNING id, name, email, country, avatar_url, is_admin, is_suspended, suspension_reason, is_premium, subscription_tier, coins, created_at`,
-      [giftPrice, req.user.id]
+      `UPDATE users SET coins = coins - $1 WHERE id=$2 AND coins >= $1 RETURNING id, name, email, country, avatar_url, is_admin, is_suspended, suspension_reason, is_premium, subscription_tier, coins, created_at`,
+      [totalCost, req.user.id]
     );
+    if (!viewerUpdate.rowCount) {
+      return res.status(400).json({ error: 'Solde de jetons insuffisant. Veuillez recharger votre portefeuille.' });
+    }
 
     await pool.query(
       `UPDATE users SET coins = coins + $1 WHERE id=$2`,
-      [giftPrice, streamerId]
+      [totalCost, streamerId]
     );
 
     const updatedViewer = publicUser(viewerUpdate.rows[0]);
@@ -1022,6 +1163,7 @@ app.post('/api/lives/:id/gifts', authMiddleware, async (req, res) => {
       giftType,
       giftPrice,
       giftQty,
+      totalCost,
       avatarUrl: updatedViewer.avatarUrl,
       createdAt: new Date().toISOString()
     });
@@ -1081,7 +1223,7 @@ app.get('/api/blocks', authMiddleware, async (req, res) => {
   res.json({ blocked: result.rows.map(publicUser) });
 });
 
-app.post('/api/users/:id/block', authMiddleware, async (req, res) => {
+app.post('/api/users/:id/block', authMiddleware, blockLimiter, async (req, res) => {
   if (req.params.id === req.user.id) return res.status(400).json({ error: 'Impossible de te bloquer toi-même' });
   const exists = await pool.query('SELECT id FROM users WHERE id=$1', [req.params.id]);
   if (!exists.rowCount) return res.status(404).json({ error: 'Utilisateur introuvable' });
@@ -1187,6 +1329,41 @@ app.patch('/api/admin/users/:id/admin', authMiddleware, adminMiddleware, async (
   res.json({ user: adminUser(result.rows[0]) });
 });
 
+// Admin : octroie (ou retire) un niveau d'abonnement à un utilisateur.
+app.patch('/api/admin/users/:id/subscription', authMiddleware, adminMiddleware, async (req, res) => {
+  const tier = String(req.body?.subscriptionTier || 'standard').toLowerCase();
+  if (!['standard', 'premium', 'elite'].includes(tier)) {
+    return res.status(400).json({ error: 'Niveau d’abonnement invalide' });
+  }
+  const isPremium = (tier === 'premium' || tier === 'elite');
+  const result = await pool.query(
+    `UPDATE users SET subscription_tier=$1, is_premium=$2 WHERE id=$3
+     RETURNING id, name, email, country, avatar_url, is_admin, is_suspended, suspension_reason, is_premium, subscription_tier, coins, created_at`,
+    [tier, isPremium, req.params.id]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  await logAdmin(req, 'subscription_change', 'user', req.params.id, `tier=${tier}`);
+  io.emit('profile-updated', publicUser(result.rows[0]));
+  res.json({ user: adminUser(result.rows[0]) });
+});
+
+// Admin : ajoute des jetons à un utilisateur (montant borné et positif).
+app.post('/api/admin/users/:id/coins', authMiddleware, adminMiddleware, async (req, res) => {
+  const amount = Math.floor(Number(req.body?.amount || 0));
+  if (!Number.isInteger(amount) || amount < 1 || amount > 1000000) {
+    return res.status(400).json({ error: 'Montant de jetons invalide (1 à 1 000 000)' });
+  }
+  const result = await pool.query(
+    `UPDATE users SET coins = coins + $1 WHERE id=$2
+     RETURNING id, name, email, country, avatar_url, is_admin, is_suspended, suspension_reason, is_premium, subscription_tier, coins, created_at`,
+    [amount, req.params.id]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  await logAdmin(req, 'grant_coins', 'user', req.params.id, `+${amount}`);
+  io.emit('profile-updated', publicUser(result.rows[0]));
+  res.json({ user: adminUser(result.rows[0]) });
+});
+
 app.get('/api/admin/posts', authMiddleware, adminMiddleware, async (req, res) => {
   const result = await pool.query(
     `SELECT p.id, p.user_id, p.author, p.text, p.image_url, p.likes, p.created_at, u.avatar_url, u.is_premium,
@@ -1283,22 +1460,76 @@ app.post('/api/posts', authMiddleware, postLimiter, async (req, res) => {
   res.json({ post });
 });
 
-app.post('/api/posts/:id/like', authMiddleware, async (req, res) => {
+// Récupère une publication avec son compteur de likes à jour.
+async function fetchPost(postId) {
   const result = await pool.query(
-    `UPDATE posts SET likes = likes + 1 WHERE id=$1
-     RETURNING id, user_id, author, text, image_url, likes, created_at,
-       (SELECT avatar_url FROM users WHERE id=posts.user_id) AS avatar_url,
-       (SELECT COUNT(*) FROM comments WHERE post_id=posts.id) AS comment_count`,
-    [req.params.id]
+    `SELECT p.id, p.user_id, p.author, p.text, p.image_url, p.likes, p.created_at,
+            u.avatar_url, u.is_premium, u.subscription_tier,
+            (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id) AS comment_count
+     FROM posts p JOIN users u ON u.id=p.user_id
+     WHERE p.id=$1`,
+    [postId]
   );
-  if (!result.rowCount) return res.status(404).json({ error: 'Publication introuvable' });
-  const post = publicPost(result.rows[0]);
-  io.emit('post-liked', post);
+  if (!result.rowCount) return null;
+  return publicPost(result.rows[0]);
+}
 
-  const postRow = result.rows[0];
-  await createNotification(postRow.user_id, req.user.id, 'like', postRow.id, 'a aimé votre publication');
+app.post('/api/posts/:id/like', authMiddleware, likeLimiter, async (req, res) => {
+  try {
+    const post = await pool.query('SELECT id, user_id FROM posts WHERE id=$1', [req.params.id]);
+    if (!post.rowCount) return res.status(404).json({ error: 'Publication introuvable' });
 
-  res.json({ post });
+    const inserted = await pool.query(
+      `INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [req.params.id, req.user.id]
+    );
+    if (inserted.rowCount) {
+      await pool.query('UPDATE posts SET likes = likes + 1 WHERE id=$1', [req.params.id]);
+      await createNotification(post.rows[0].user_id, req.user.id, 'like', req.params.id, 'a aimé votre publication');
+    }
+    const full = await fetchPost(req.params.id);
+    io.emit('post-liked', full);
+    res.json({ post: full, liked: inserted.rowCount > 0 });
+  } catch (error) {
+    console.error('Erreur like:', error);
+    res.status(500).json({ error: 'Erreur lors de l’ajout du j’aime' });
+  }
+});
+
+app.delete('/api/posts/:id/like', authMiddleware, likeLimiter, async (req, res) => {
+  try {
+    const removed = await pool.query(
+      `DELETE FROM post_likes WHERE post_id=$1 AND user_id=$2`,
+      [req.params.id, req.user.id]
+    );
+    if (removed.rowCount) {
+      await pool.query('UPDATE posts SET likes = GREATEST(likes - 1, 0) WHERE id=$1', [req.params.id]);
+    }
+    const full = await fetchPost(req.params.id);
+    if (!full) return res.status(404).json({ error: 'Publication introuvable' });
+    io.emit('post-unliked', full);
+    res.json({ post: full, liked: false });
+  } catch (error) {
+    console.error('Erreur unlike:', error);
+    res.status(500).json({ error: 'Erreur lors du retrait du j’aime' });
+  }
+});
+
+// Suppression d'une publication par son auteur (ou un administrateur).
+app.delete('/api/posts/:id', authMiddleware, async (req, res) => {
+  try {
+    const post = await pool.query('SELECT user_id FROM posts WHERE id=$1', [req.params.id]);
+    if (!post.rowCount) return res.status(404).json({ error: 'Publication introuvable' });
+    if (post.rows[0].user_id !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'Vous n’êtes pas autorisé à supprimer cette publication.' });
+    }
+    await pool.query('DELETE FROM posts WHERE id=$1', [req.params.id]);
+    io.emit('post-deleted', { id: req.params.id });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erreur suppression publication:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression de la publication' });
+  }
 });
 
 app.get('/api/posts/:id/comments', authMiddleware, async (req, res) => {
@@ -1335,6 +1566,24 @@ app.post('/api/posts/:id/comments', authMiddleware, commentLimiter, async (req, 
   res.json({ comment });
 });
 
+// Suppression d'un commentaire par son auteur (ou un administrateur).
+app.delete('/api/comments/:id', authMiddleware, async (req, res) => {
+  try {
+    const comment = await pool.query('SELECT user_id, post_id FROM comments WHERE id=$1', [req.params.id]);
+    if (!comment.rowCount) return res.status(404).json({ error: 'Commentaire introuvable' });
+    if (comment.rows[0].user_id !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'Vous n’êtes pas autorisé à supprimer ce commentaire.' });
+    }
+    const postId = comment.rows[0].post_id;
+    await pool.query('DELETE FROM comments WHERE id=$1', [req.params.id]);
+    io.emit('comment-deleted', { id: req.params.id, postId });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erreur suppression commentaire:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression du commentaire' });
+  }
+});
+
 app.get('/api/messages/:friendId', authMiddleware, async (req, res) => {
   if (await isBlocked(req.user.id, req.params.friendId)) return res.status(403).json({ error: 'Discussion bloquée' });
   const result = await pool.query(
@@ -1353,7 +1602,10 @@ app.get('/api/messages/:friendId', authMiddleware, async (req, res) => {
 
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth.token;
+    // Token fourni via handshake.auth OU via cookie httpOnly (même origine).
+    const cookies = readCookies({ headers: socket.handshake.headers });
+    const token = socket.handshake.auth?.token || cookies.xys_token || null;
+    if (!token) return next(new Error('Non autorisé'));
     const decoded = jwt.verify(token, JWT_SECRET);
     const result = await pool.query('SELECT id, name, is_suspended FROM users WHERE id=$1', [decoded.id]);
     if (!result.rowCount || result.rows[0].is_suspended) return next(new Error('Non autorisé'));
@@ -1374,15 +1626,31 @@ function checkSocketRate(userId, action, max, windowMs) {
   socketRate.set(key, item);
   return item.count <= max;
 }
+setInterval(() => pruneRateMap(socketRate), 10 * 60 * 1000);
 
 io.on('connection', socket => {
   socket.join(socket.user.id);
   io.emit('presence', { id: socket.user.id, name: socket.user.name, online: true });
 
-  socket.on('join-group', payload => {
+  // Ne rejoindre une room de groupe QUE si l'utilisateur en est réellement membre.
+  // Sans cette vérification, n'importe qui pouvait rejoindre une room par son id
+  // et recevoir les messages privés du groupe.
+  socket.on('join-group', async payload => {
     const groupId = String(payload?.groupId || '').trim();
     if (!groupId) return;
-    socket.join(`group-${groupId}`);
+    try {
+      const member = await pool.query(
+        'SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2',
+        [groupId, socket.user.id]
+      );
+      if (member.rowCount) {
+        socket.join(`group-${groupId}`);
+      } else {
+        socket.emit('chat-error', { error: 'Vous devez être membre de ce groupe pour le rejoindre.' });
+      }
+    } catch (e) {
+      socket.emit('chat-error', { error: 'Impossible de rejoindre le groupe.' });
+    }
   });
 
   socket.on('leave-group', payload => {
@@ -1391,10 +1659,15 @@ io.on('connection', socket => {
     socket.leave(`group-${groupId}`);
   });
 
-  socket.on('join-live', payload => {
+  socket.on('join-live', async payload => {
     const liveId = String(payload?.liveId || '').trim();
     if (!liveId) return;
-    socket.join(`live-${liveId}`);
+    try {
+      const live = await pool.query('SELECT id FROM lives WHERE id=$1', [liveId]);
+      if (live.rowCount) socket.join(`live-${liveId}`);
+    } catch (e) {
+      socket.emit('chat-error', { error: 'Direct introuvable.' });
+    }
   });
 
   socket.on('leave-live', payload => {
@@ -1403,14 +1676,27 @@ io.on('connection', socket => {
     socket.leave(`live-${liveId}`);
   });
 
-  socket.on('live-frame', payload => {
+  // Seul le streamer (propriétaire du direct) peut diffuser des frames aux
+  // spectateurs ; un simple spectateur ne peut pas injecter de contenu.
+  socket.on('live-frame', async payload => {
     const liveId = String(payload?.liveId || '').trim();
     const frame = String(payload?.frame || '').trim();
     if (!liveId || !frame) return;
-    socket.to(`live-${liveId}`).emit('live-frame', { frame });
+    try {
+      const live = await pool.query('SELECT user_id FROM lives WHERE id=$1', [liveId]);
+      if (live.rowCount && live.rows[0].user_id === socket.user.id) {
+        socket.to(`live-${liveId}`).emit('live-frame', { frame });
+      }
+    } catch (e) {
+      // silencieux
+    }
   });
 
   socket.on('live-comment', payload => {
+    if (!checkSocketRate(socket.user.id, 'livecomment', 30, 60 * 1000)) {
+      socket.emit('chat-error', { error: 'Trop de commentaires. Ralentis un peu.' });
+      return;
+    }
     const liveId = String(payload?.liveId || '').trim();
     const text = safeText(payload?.text, 500);
     if (!liveId || !text) return;
@@ -1498,6 +1784,29 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     io.emit('presence', { id: socket.user.id, name: socket.user.name, online: false });
   });
+});
+
+// Routes /api inconnues => réponse JSON propre (404), jamais de HTML.
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Route API introuvable' });
+});
+
+// Middleware d'erreur global : évite toute fuite de détails internes.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('Erreur serveur:', err);
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
+  if (status === 400) return res.status(400).json({ error: err.message || 'Requête invalide' });
+  return res.status(500).json({ error: 'Erreur interne du serveur' });
+});
+
+// Toute erreur async non interceptée ne doit pas faire planter le processus.
+process.on('unhandledRejection', reason => {
+  console.error('Rejet non géré:', reason);
+});
+process.on('uncaughtException', err => {
+  console.error('Exception non gérée:', err);
 });
 
 initDb()

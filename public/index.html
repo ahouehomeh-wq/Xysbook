@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0866ff" />
+  <title>XyS Book Mondial</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <!-- ===================== AUTH ===================== -->
+  <section id="auth-view" hidden>
+    <div class="auth-wrap">
+      <div class="auth-brand">
+        <div class="logo">XyS</div>
+        <h1>XyS Book Mondial</h1>
+        <p class="tagline">Connecte-toi avec le monde entier, en temps réel.</p>
+      </div>
+      <div class="auth-card">
+        <!-- Onglets -->
+        <div class="auth-tabs" role="tablist">
+          <button class="tab-btn active" data-authtab="login">Connexion</button>
+          <button class="tab-btn" data-authtab="register">Inscription</button>
+          <button class="tab-btn" data-authtab="recover">Mot de passe</button>
+        </div>
+        <div id="auth-msg" class="auth-msg"></div>
+
+        <!-- LOGIN -->
+        <form id="login-form" class="auth-form">
+          <input name="login" placeholder="Nom ou e-mail" required />
+          <input name="password" type="password" placeholder="Mot de passe" required />
+          <button type="submit" class="btn btn-primary btn-block">Se connecter</button>
+        </form>
+
+        <!-- REGISTER -->
+        <form id="register-form" class="auth-form" hidden>
+          <input name="name" placeholder="Nom d'utilisateur" maxlength="60" required />
+          <input name="email" type="email" placeholder="E-mail (obligatoire)" required />
+          <input name="country" placeholder="Pays" maxlength="80" />
+          <input name="password" type="password" placeholder="Mot de passe : 8 car. + lettre + chiffre" minlength="8" required />
+          <select name="recoveryQuestion">
+            <option value="Nom de ta ville de naissance ?">Nom de ta ville de naissance ?</option>
+            <option value="Nom de ton premier animal ?">Nom de ton premier animal ?</option>
+            <option value="Nom de ton plat préféré ?">Nom de ton plat préféré ?</option>
+            <option value="Modèle de ta première voiture ?">Modèle de ta première voiture ?</option>
+          </select>
+          <input name="recoveryAnswer" placeholder="Ta réponse secrète" required />
+          <button type="submit" class="btn btn-primary btn-block">Créer mon compte</button>
+        </form>
+
+        <!-- RECOVER -->
+        <form id="recover-form" class="auth-form" hidden>
+          <input name="login" placeholder="Nom ou e-mail" required />
+          <div id="recover-question"></div>
+          <input name="answer" placeholder="Ta réponse secrète" />
+          <input name="newPassword" type="password" placeholder="Nouveau mot de passe (6 min.)" />
+          <button type="submit" class="btn btn-primary btn-block">Réinitialiser</button>
+        </form>
+
+        <div class="auth-foot">
+          <a href="confidentialite.html" target="_blank">Confidentialité</a>
+          <a href="conditions.html" target="_blank">Conditions</a>
+          <a href="regles.html" target="_blank">Règles</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== APP ===================== -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <button class="brand-link" id="btn-home">
+          <span class="logo logo-sm">XyS</span><span class="brand-name">Book Mondial</span>
+        </button>
+        <nav class="desktop-nav">
+          <button class="nav-item" data-tab="feed">Accueil</button>
+          <button class="nav-item" data-tab="messages">Messages</button>
+          <button class="nav-item" data-tab="groups">Groupes</button>
+          <button class="nav-item" data-tab="market">Boutique</button>
+          <button class="nav-item" data-tab="search">Recherche</button>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-btn" id="btn-notif" title="Notifications">
+            🔔<span id="notif-badge" class="badge" hidden></span>
+          </button>
+          <button class="avatar-btn" id="btn-profile" title="Profil"></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <!-- Barre de navigation basse (mobile) -->
+    <nav class="bottom-nav">
+      <button class="bnav" data-tab="feed">🏠<span>Accueil</span></button>
+      <button class="bnav" data-tab="messages">💬<span>Messages</span></button>
+      <button class="bnav" data-tab="groups">👥<span>Groupes</span></button>
+      <button class="bnav" data-tab="market">🛒<span>Boutique</span></button>
+      <button class="bnav" data-tab="search">🔎<span>Chercher</span></button>
+    </nav>
+  </div>
+
+  <!-- Modale générique -->
+  <div id="modal-root"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
