@@ -1,0 +1,9 @@
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; margin: 0; color: #1c1e21; }
+.legal-wrap { max-width: 760px; margin: 0 auto; padding: 30px 16px; }
+.legal-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.legal-card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.12); padding: 24px 26px; }
+.legal-card h1 { font-size: 26px; }
+.legal-card h2 { font-size: 18px; margin: 20px 0 8px; color: #0866ff; }
+.legal-card p, .legal-card li { font-size: 15px; line-height: 1.6; color: #30333a; }
+.back { color: #0866ff; text-decoration: none; font-weight: 600; font-size: 14px; }
+.logo-sm { display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(135deg,#0866ff,#4f9bff); color:#fff; font-weight:800; font-size:16px; width:36px;height:36px;border-radius:10px; }

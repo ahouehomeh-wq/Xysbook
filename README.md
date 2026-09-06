@@ -177,14 +177,35 @@ xys-book-mondial/
   render.yaml            # déploiement Render
   docker-compose.yml     # PostgreSQL local
   .env.example           # exemple de configuration
-  public/index.html      # interface utilisateur
+  .gitignore             # ignore .env et node_modules
+  public/
+    index.html           # interface utilisateur (SPA)
+    app.css              # styles de l'interface
+    app.js               # logique de l'interface (temps réel)
+    admin.html           # tableau administrateur (/admin.html)
+    admin.css            # styles du panneau admin
+    admin.js             # logique du panneau admin
+    conditions.html      # conditions d'utilisation
+    confidentialite.html # politique de confidentialité
+    regles.html          # règles de la communauté
+    legal.css            # styles des pages légales
 ```
 
 ---
 
-## 5. Important sécurité
+## 5. Correctifs de sécurité appliqués
 
-Ne mets jamais ton vrai fichier `.env` sur GitHub.
+- **Rechargement de jetons sécurisé** : seuls des forfaits validés côté serveur sont acceptés (+ limitation de débit).
+- **Cadeaux (directs)** : le prix vient d'un catalogue serveur, les quantités négatives/abusives sont rejetées et le débit est atomique.
+- **J'aime dédoublonnés** : table `post_likes` empêchant d'aimer une publication en boucle (fini l'inflation des compteurs).
+- **Suppression possible** de ses propres publications et commentaires.
+- **Validation** du format des e-mails.
+- **Rate-limits** ajoutés sur les likes, blocages, rechargements et cadeaux.
+- **Middleware d'erreur global** et réponses JSON 404 pour l'API (pas de fuite de détails internes).
+
+## 6. Important sécurité
+
+Ne mets jamais ton vrai fichier `.env` sur GitHub (il est désormais ignoré par `.gitignore`).
 
 Change toujours :
 

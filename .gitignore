@@ -1,0 +1,15 @@
+# Environnement
+.env
+.env.local
+
+# Dépendances
+node_modules/
+
+# Journaux
+*.log
+npm-debug.log*
+
+# Fichiers temporaires
+public/temp.txt
+temp.txt
+.DS_Store
