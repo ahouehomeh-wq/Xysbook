@@ -168,6 +168,10 @@ const GIFT_CATALOG = {
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 }
+// Mot de passe : au moins 8 caractères, avec au moins une lettre et un chiffre.
+function isStrongPassword(value) {
+  return typeof value === 'string' && value.length >= 8 && /[a-zA-Z]/.test(value) && /[0-9]/.test(value);
+}
 
 async function initDb() {
   await pool.query(`
@@ -345,9 +349,37 @@ async function applyAdminEmails() {
 function signToken(user) {
   return jwt.sign({ id: user.id, name: user.name, isAdmin: Boolean(user.isAdmin) }, JWT_SECRET, { expiresIn: '30d' });
 }
-async function authMiddleware(req, res, next) {
+
+// --- Authentification : en-tête Bearer OU cookie httpOnly ---
+function readCookies(req) {
+  const header = req.headers.cookie || '';
+  const out = {};
+  header.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx > -1) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      try { out[k] = decodeURIComponent(v); } catch (e) { out[k] = v; }
+    }
+  });
+  return out;
+}
+function getToken(req) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  return readCookies(req).xys_token || null;
+}
+function setAuthCookie(res, token) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie',
+    `xys_token=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax${secure}`);
+}
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', 'xys_token=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
+}
+
+async function authMiddleware(req, res, next) {
+  const token = getToken(req);
   if (!token) return res.status(401).json({ error: 'Token manquant' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -437,8 +469,25 @@ if (process.env.TRUST_PROXY) {
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: originConfig } });
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: originConfig }));
+// helmet avec une CSP adaptée à la SPA (scripts uniquement depuis le serveur,
+// styles autorisant les attributs inline utilisés par l'interface).
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      'default-src': ["'self'"],
+      'script-src': ["'self'"],
+      'style-src': ["'self'", "'unsafe-inline'"],
+      'img-src': ["'self'", 'data:', 'blob:'],
+      'font-src': ["'self'", 'data:'],
+      'connect-src': ["'self'", 'ws:', 'wss:'],
+      'object-src': ["'none'"],
+      'base-uri': ["'self'"],
+      'form-action': ["'self'"]
+    }
+  }
+}));
+app.use(cors({ origin: originConfig, credentials: true }));
 app.use(express.json({ limit: '750kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -460,10 +509,12 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     const recoveryQuestion = safeText(req.body?.recoveryQuestion, 150) || 'Nom de ta ville de naissance ?';
     const recoveryAnswer = safeText(req.body?.recoveryAnswer, 100).toLowerCase();
 
-    if (!cleanName || !password) return res.status(400).json({ error: 'Nom et mot de passe obligatoires' });
+    if (!cleanName || !cleanEmail || !password) {
+      return res.status(400).json({ error: 'Nom, e-mail et mot de passe obligatoires' });
+    }
     if (cleanName.length < 2) return res.status(400).json({ error: 'Nom trop court' });
-    if (password.length < 6) return res.status(400).json({ error: 'Mot de passe: 6 caractères minimum' });
-    if (cleanEmail && !isValidEmail(cleanEmail)) return res.status(400).json({ error: 'Adresse e-mail invalide' });
+    if (!isValidEmail(cleanEmail)) return res.status(400).json({ error: 'Adresse e-mail invalide' });
+    if (!isStrongPassword(password)) return res.status(400).json({ error: 'Mot de passe: 8 caractères minimum, avec une lettre et un chiffre' });
     if (!recoveryAnswer) return res.status(400).json({ error: 'Réponse de récupération obligatoire pour sécuriser le compte' });
 
     const exists = await pool.query(
@@ -483,11 +534,18 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     );
     const user = publicUser(result.rows[0]);
     io.emit('new-user', user);
-    res.json({ token: signToken(user), user });
+    const token = signToken(user);
+    setAuthCookie(res, token);
+    res.json({ token, user });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur inscription' });
   }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.json({ ok: true });
 });
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -504,7 +562,9 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
     if (row.is_suspended) return res.status(403).json({ error: 'Ce compte est suspendu' });
     const user = publicUser(row);
-    res.json({ token: signToken(user), user });
+    const token = signToken(user);
+    setAuthCookie(res, token);
+    res.json({ token, user });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur connexion' });
@@ -541,8 +601,8 @@ app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
     if (!userId || !answer || !newPassword) {
       return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Nouveau mot de passe: 6 caractères minimum' });
+    if (!isStrongPassword(newPassword)) {
+      return res.status(400).json({ error: 'Nouveau mot de passe: 8 caractères minimum, avec une lettre et un chiffre' });
     }
 
     const userRes = await pool.query('SELECT recovery_answer_hash FROM users WHERE id=$1', [userId]);
@@ -1542,7 +1602,10 @@ app.get('/api/messages/:friendId', authMiddleware, async (req, res) => {
 
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth.token;
+    // Token fourni via handshake.auth OU via cookie httpOnly (même origine).
+    const cookies = readCookies({ headers: socket.handshake.headers });
+    const token = socket.handshake.auth?.token || cookies.xys_token || null;
+    if (!token) return next(new Error('Non autorisé'));
     const decoded = jwt.verify(token, JWT_SECRET);
     const result = await pool.query('SELECT id, name, is_suspended FROM users WHERE id=$1', [decoded.id]);
     if (!result.rowCount || result.rows[0].is_suspended) return next(new Error('Non autorisé'));

@@ -202,6 +202,10 @@ xys-book-mondial/
 - **Validation** du format des e-mails.
 - **Rate-limits** ajoutés sur les likes, blocages, rechargements et cadeaux.
 - **Middleware d'erreur global** et réponses JSON 404 pour l'API (pas de fuite de détails internes).
+- **CSP** (Content-Security-Policy) via helmet.
+- **JWT en cookie `httpOnly`** (plus de token en `localStorage`) + support Bearer conservé.
+- **Mot de passe ≥ 8 caractères** (lettre + chiffre) et **e-mail obligatoire** à l'inscription.
+- **Abonnements premium/elite et crédits de jetons réservés à l'admin** ; rechargement libre soumis au flag `DEMO_TOPUP`.
 
 ## 6. Important sécurité
 

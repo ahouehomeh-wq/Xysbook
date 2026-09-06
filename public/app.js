@@ -4,7 +4,7 @@
 
   /* ---------- État global ---------- */
   const state = {
-    token: localStorage.getItem('xys_token') || '',
+    token: '',           // l'auth passe par cookie httpOnly (jamais de JWT en localStorage)
     user: null,          // user public
     socket: null,
     tab: 'feed',
@@ -131,7 +131,7 @@
     const login = f.login.value.trim(), password = f.password.value;
     try {
       const d = await api('/auth/login', { method: 'POST', body: { name: login, password } });
-      enterApp(d.token, d.user);
+      enterApp(d.user);
     } catch (e) { authMsg(e.message, 'err'); }
   }
   async function doRegister(ev) {
@@ -146,7 +146,7 @@
           recoveryQuestion: f.recoveryQuestion.value, recoveryAnswer: f.recoveryAnswer.value
         }
       });
-      enterApp(d.token, d.user);
+      enterApp(d.user);
     } catch (e) { authMsg(e.message, 'err'); }
   }
   async function doRecoverStep1(ev) {
@@ -174,9 +174,7 @@
     } catch (e) { authMsg(e.message, 'err'); }
   }
 
-  function enterApp(token, user) {
-    state.token = token;
-    localStorage.setItem('xys_token', token);
+  function enterApp(user) {
     $('#auth-view').hidden = true;
     $('#app').hidden = false;
     state.user = user;
@@ -186,9 +184,9 @@
     switchTab('feed');
   }
   function logout() {
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     if (state.socket) state.socket.disconnect();
-    state.token = ''; state.user = null; state.me = null;
-    localStorage.removeItem('xys_token');
+    state.user = null; state.me = null;
     $('#app').hidden = true; $('#auth-view').hidden = false;
     setAuthTab('login');
   }
@@ -881,17 +879,10 @@
   /* ---------- Init ---------- */
   function init() {
     setAuthTab('login');
-    if (state.token) {
-      api('/me')
-        .then(d => { enterApp(state.token, d.user); })
-        .catch(() => {
-          state.token = '';
-          localStorage.removeItem('xys_token');
-          $('#auth-view').hidden = false;
-        });
-    } else {
-      $('#auth-view').hidden = false;
-    }
+    // Session restaurée depuis le cookie httpOnly (aucun token stocké côté client).
+    api('/me')
+      .then(d => enterApp(d.user))
+      .catch(() => { $('#auth-view').hidden = false; });
   }
   init();
 })();

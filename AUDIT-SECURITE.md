@@ -123,8 +123,10 @@ L'application est **techniquement propre sur l'essentiel** (aucune injection SQL
 
 **Fichiers de déploiement mis à jour :** `.env.example` (`TRUST_PROXY`, `DEMO_TOPUP=false`) et `render.yaml` (`TRUST_PROXY=1`, pas de `DEMO_TOPUP`).
 
-### Reste à faire (recommandé avant production)
-- Réactiver une **CSP** adaptée (défense en profondeur XSS).
-- Exiger **≥ 8 caractères** et une **confirmation d'e-mail** à l'inscription.
-- Envisager un stockage du JWT en **cookie httpOnly** (+ CSRF token) plutôt que `localStorage`.
-- Restreindre `CLIENT_ORIGIN` au vrai domaine.
+### Reste à faire / état des points d'hygiène
+- ✅ **CSP réactivée** : helmet renvoie une `Content-Security-Policy` (scripts `'self'`, images `data:`/`blob:`, connexions `ws`/`wss`).
+- ✅ **Mot de passe renforcé** : ≥ 8 caractères avec au moins une lettre et un chiffre (inscription et réinitialisation).
+- ✅ **E-mail obligatoire et validé** à l'inscription (réduit l'usurpation de nom).
+- ✅ **JWT en cookie `httpOnly`** (en plus du Bearer) ; le front ne stocke plus le token en `localStorage`.
+- ➖ **Confirmation d'e-mail (double opt-in)** : non implémentée — nécessite un fournisseur d'envoi (Brevo/SendGrid/Resend/SMTP).
+- ✅ Recommandation documentée : restreindre `CLIENT_ORIGIN` à ton domaine (requis pour les cookies cross-origin avec `credentials`).

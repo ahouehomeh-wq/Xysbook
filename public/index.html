@@ -36,9 +36,9 @@
         <!-- REGISTER -->
         <form id="register-form" class="auth-form" hidden>
           <input name="name" placeholder="Nom d'utilisateur" maxlength="60" required />
-          <input name="email" type="email" placeholder="E-mail (optionnel)" />
+          <input name="email" type="email" placeholder="E-mail (obligatoire)" required />
           <input name="country" placeholder="Pays" maxlength="80" />
-          <input name="password" type="password" placeholder="Mot de passe (6 min.)" required />
+          <input name="password" type="password" placeholder="Mot de passe : 8 car. + lettre + chiffre" minlength="8" required />
           <select name="recoveryQuestion">
             <option value="Nom de ta ville de naissance ?">Nom de ta ville de naissance ?</option>
             <option value="Nom de ton premier animal ?">Nom de ton premier animal ?</option>

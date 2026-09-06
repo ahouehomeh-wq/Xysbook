@@ -4,7 +4,7 @@
   const $ = s => document.querySelector(s);
   const $$ = s => Array.from(document.querySelectorAll(s));
 
-  let token = localStorage.getItem('xys_admin_token') || '';
+  let token = ''; // auth principale par cookie httpOnly ; Bearer en mémoire de repli
   let current = 'dashboard';
 
   function esc(v) {
@@ -23,7 +23,7 @@
   function api(path, opts) {
     opts = opts || {};
     const h = opts.headers || {};
-    h['Authorization'] = 'Bearer ' + token;
+    if (token) h['Authorization'] = 'Bearer ' + token;
     if (opts.body && typeof opts.body !== 'string') { h['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.body); }
     return fetch('/api' + path, { ...opts, headers: h }).then(async res => {
       const d = await res.json().catch(() => ({}));
@@ -46,7 +46,7 @@
     try {
       const d = await api('/auth/login', { method: 'POST', body: { name: f.login.value.trim(), password: f.password.value } });
       if (!d.user.isAdmin) { msg('Ce compte n\'est pas administrateur.', 'err'); return; }
-      token = d.token; localStorage.setItem('xys_admin_token', token);
+      token = d.token; // cookie httpOnly posé par le serveur ; token gardé en mémoire
       enter();
     } catch (e) { msg(e.message, 'err'); }
   }
@@ -204,12 +204,16 @@
   }
 
   function logout() {
-    token = ''; localStorage.removeItem('xys_admin_token');
+    token = '';
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     $('#admin-login').hidden = false; $('#admin-app').hidden = true;
   }
   $('#btn-logout').addEventListener('click', logout);
   $('#btn-refresh').addEventListener('click', () => load(current));
   $('#al-form').addEventListener('submit', doLogin);
 
-  if (token) enter();
+  // Session restaurée depuis le cookie httpOnly (si déjà connecté admin).
+  api('/admin/stats')
+    .then(() => enter())
+    .catch(() => { $('#admin-login').hidden = false; });
 })();
