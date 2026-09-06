@@ -14,6 +14,12 @@ services:
         value: "*"
       - key: ADMIN_EMAILS
         value: "change-moi@email.com"
+      # L'application est derrière le proxy de Render => on fait confiance à
+      # X-Forwarded-For pour l'adresse réelle (limites anti-spam).
+      # IMPORTANT : ne PAS définir DEMO_TOPUP ici => aucun crédit de jetons sans
+      # une vraie passerelle de paiement.
+      - key: TRUST_PROXY
+        value: "1"
       - key: DATABASE_URL
         fromDatabase:
           name: xys-book-db

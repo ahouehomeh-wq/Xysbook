@@ -114,13 +114,16 @@
       '<tr><td><b>' + esc(u.name) + '</b>' + (u.isAdmin ? ' <span class="chip">ADMIN</span>' : '') + '</td>' +
       '<td>' + esc(u.email) + '</td><td>' + esc(u.country) + '</td>' +
       '<td>' + (u.isSuspended ? '<span class="badge-status badge-rejected">Suspendu</span>' : '<span class="badge-status badge-reviewed">Actif</span>') + '</td>' +
+      '<td><span class="chip">' + esc(u.subscriptionTier || 'standard') + '</span> • ' + (Number(u.coins) || 0).toLocaleString('fr-FR') + ' j</td>' +
       '<td><div class="tbl-actions">' +
       '<button class="btn btn-sm ' + (u.isSuspended ? 'btn-success' : 'btn-danger') + '" data-sus="' + u.id + '" data-cur="' + u.isSuspended + '">' + (u.isSuspended ? 'Réactiver' : 'Suspendre') + '</button>' +
-      '<button class="btn btn-sm btn-ghost" data-adm="' + u.id + '" data-cur="' + u.isAdmin + '">' + (u.isAdmin ? 'Retirer admin' : 'Promouvoir admin') + '</button></div></td></tr>'
+      '<button class="btn btn-sm btn-ghost" data-adm="' + u.id + '" data-cur="' + u.isAdmin + '">' + (u.isAdmin ? 'Retirer admin' : 'Promouvoir admin') + '</button>' +
+      '<button class="btn btn-sm btn-ghost" data-tier="' + u.id + '" data-cur="' + (u.subscriptionTier || 'standard') + '">Niveau</button>' +
+      '<button class="btn btn-sm btn-ghost" data-coin="' + u.id + '">Jetons</button></div></td></tr>'
     ).join('');
     m.innerHTML = '<h2 class="section-title">👥 Utilisateurs</h2><div class="table-wrap"><table>' +
-      '<thead><tr><th>Nom</th><th>E-mail</th><th>Pays</th><th>Statut</th><th>Actions</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="5" class="empty">Aucun utilisateur.</td></tr>') + '</tbody></table></div>';
+      '<thead><tr><th>Nom</th><th>E-mail</th><th>Pays</th><th>Statut</th><th>Abonnement</th><th>Actions</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6" class="empty">Aucun utilisateur.</td></tr>') + '</tbody></table></div>';
     $$('[data-sus]').forEach(b => b.addEventListener('click', async () => {
       const suspend = b.dataset.cur !== 'true';
       let reason = '';
@@ -134,6 +137,23 @@
       try {
         await api('/admin/users/' + b.dataset.adm + '/admin', { method: 'PATCH', body: { isAdmin: b.dataset.cur !== 'true' } });
         toast('Rôle mis à jour', 'ok'); load('users');
+      } catch (e) { toast(e.message, 'err'); }
+    }));
+    $$('[data-tier]').forEach(b => b.addEventListener('click', async () => {
+      const val = prompt('Niveau (standard, premium ou elite) :', b.dataset.cur);
+      if (!val) return;
+      try {
+        await api('/admin/users/' + b.dataset.tier + '/subscription', { method: 'PATCH', body: { subscriptionTier: val.trim().toLowerCase() } });
+        toast('Abonnement mis à jour', 'ok'); load('users');
+      } catch (e) { toast(e.message, 'err'); }
+    }));
+    $$('[data-coin]').forEach(b => b.addEventListener('click', async () => {
+      const val = prompt('Nombre de jetons à ajouter (positif) :', '1000');
+      const amount = Number(val);
+      if (!amount) return;
+      try {
+        await api('/admin/users/' + b.dataset.coin + '/coins', { method: 'POST', body: { amount } });
+        toast('Jetons crédités', 'ok'); load('users');
       } catch (e) { toast(e.message, 'err'); }
     }));
   }

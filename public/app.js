@@ -726,12 +726,8 @@
       '<div class="field"><label>Pays</label><input id="up-country" value="' + esc(u.country || '') + '" maxlength="80"/></div>' +
       '<button class="btn btn-primary" id="up-save">Enregistrer le profil</button>' +
       '<div class="divider"></div>' +
-      '<h3 class="small muted">Abonnement</h3>' +
-      '<div class="flex wrap mt">' +
-      '<button class="btn btn-ghost btn-sm" data-tier="standard">Standard</button>' +
-      '<button class="btn btn-ghost btn-sm" data-tier="premium">⭐ Premium</button>' +
-      '<button class="btn btn-ghost btn-sm" data-tier="elite">👑 Elite</button></div>' +
-      '<div class="divider"></div>' +
+      '<p class="small muted">Les abonnements Premium/Elite sont octroyés par les administrateurs. ' +
+      'Le « boost » des produits est géré uniquement côté serveur.</p>' +
       '<div class="flex wrap">' +
       '<button class="btn btn-success" id="up-coins">💰 Recharger des jetons</button>' +
       '<button class="btn btn-ghost" id="up-export">⬇️ Exporter mes données (RGPD)</button></div>' +
@@ -745,10 +741,6 @@
       catch (err) { toast('Image invalide', 'err'); }
     });
     $('#up-save').addEventListener('click', () => saveProfile($('#up-country').value.trim(), null));
-    $$('[data-tier]').forEach(b => b.addEventListener('click', async () => {
-      try { const d = await api('/me/subscription', { method: 'PATCH', body: { subscriptionTier: b.dataset.tier } }); state.me = d.user; renderProfile(); toast('Abonnement mis à jour', 'ok'); }
-      catch (e) { toast(e.message, 'err'); }
-    }));
     $('#up-coins').addEventListener('click', openCoinsModal);
     $('#up-export').addEventListener('click', exportData);
     $('#up-delete').addEventListener('click', deleteAccount);
@@ -763,7 +755,8 @@
   function openCoinsModal() {
     const pkgs = [[500, 500], [1000, 1100], [2000, 2300], [5000, 6000], [10000, 12500]];
     openModal('Recharger des jetons',
-      '<div class="small muted mb">Démo : recharge simulée (aucun paiement réel n\'est effectué).</div>' +
+      '<div class="small muted mb">Mode démo : recharge simulée sans paiement réel. ' +
+      'Elle n\'est disponible que si l\'administrateur active DEMO_TOPUP.</div>' +
       '<div class="field"><label>Forfait</label><select id="coin-pkg">' +
       pkgs.map(p => '<option value="' + p[0] + '" data-coins="' + p[1] + '">' + p[0].toLocaleString('fr-FR') + ' FCFA → ' + p[1].toLocaleString('fr-FR') + ' jetons</option>').join('') +
       '</select></div>' +
