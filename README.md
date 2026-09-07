@@ -84,57 +84,78 @@ Le serveur crée automatiquement les tables au démarrage.
 
 ## 2. Publier mondialement avec Render
 
-Render est le plus simple pour commencer.
+Le dépôt contient déjà un `render.yaml` : Render peut créer automatiquement le serveur web Node.js **et** la base PostgreSQL.
 
-1. Crée un compte sur https://render.com
-2. Crée un dépôt GitHub et envoie le dossier `xys-book-mondial`.
-3. Sur Render, clique sur **New +** puis **Blueprint**.
-4. Choisis ton dépôt GitHub.
-5. Render va lire `render.yaml` et créer :
-   - le serveur web Node.js ;
-   - la base PostgreSQL.
-6. Clique sur **Apply** / **Deploy**.
+### Prérequis
 
-Tu recevras une URL du type :
+- Le code est sur **GitHub** (branche `main`).
+- Un compte [Render](https://render.com) (gratuit suffit pour tester).
+
+### Méthode A — Blueprint (recommandée, 5 minutes)
+
+1. Sur [dashboard.render.com](https://dashboard.render.com), connecte ton compte GitHub si ce n'est pas fait.
+2. Clique sur **New + → Blueprint**.
+3. Sélectionne le dépôt `Xysbook` (le fichier `render.yaml` est à la racine).
+4. Vérifie que la **branche `main`** est bien sélectionnée, puis clique sur **Apply**.
+5. Render crée alors :
+   - `xys-book-web` — le serveur Node.js (plan **Free**) ;
+   - `xys-book-db` — la base PostgreSQL (plan **Free**).
+6. Laisse le déploiement se terminer (~2-3 min). L'application est ensuite disponible à une URL du type :
 
 ```text
 https://xys-book-web.onrender.com
 ```
 
-Cette adresse sera accessible depuis différents pays.
-
-### Alternative Render manuelle
-
-1. **New +** → **PostgreSQL**.
-2. Copie l'URL `Internal Database URL`.
-3. **New +** → **Web Service**.
-4. Build command :
-
-```bash
-npm install
-```
-
-5. Start command :
-
-```bash
-npm start
-```
-
-6. Variables d'environnement :
+7. **Après le déploiement**, ouvre le service `xys-book-web → Environment` et remplace la valeur par défaut :
 
 ```text
-NODE_ENV=production
-DATABASE_URL=l_url_postgresql_render
-JWT_SECRET=une_tres_longue_phrase_secrete
-CLIENT_ORIGIN=*
-ADMIN_EMAILS=ton-email-admin@gmail.com
+ADMIN_EMAILS=change-moi@email.com
 ```
 
-Le compte qui s'inscrit avec l'email présent dans `ADMIN_EMAILS` devient administrateur. Le tableau administrateur est disponible ici :
+par ton e-mail (ex. `ton-email@gmail.com`). Le compte qui s'inscrit avec cet e-mail devient administrateur.
+Les valeurs `JWT_SECRET` et `DATABASE_URL` sont générées automatiquement par le Blueprint : tu n'as rien à saisir.
+
+8. Vérifie le bon fonctionnement :
 
 ```text
-/admin.html
+https://xys-book-web.onrender.com/api/health   → { "ok": true, "database": "connected", ... }
+https://xys-book-web.onrender.com              → page de connexion
+https://xys-book-web.onrender.com/admin.html   → panneau admin (après inscription avec l'e-mail admin)
 ```
+
+> 💡 **Tu peux aussi lancer tous les services à la fois** : `blueprint` propose un bouton **Deploy** pour tout le Blueprint. Le `render.yaml` configure aussi un **health check** sur `/api/health` : Render redémarre le service si la base devient injoignable.
+
+### Méthode B — Manuel (sans `render.yaml`)
+
+1. **New + → PostgreSQL** → crée la base (plan Free) et note l'**Internal Database URL**.
+2. **New + → Web Service** → connecte le dépôt GitHub, branche `main`.
+3. Dans le service web :
+   - **Build command** : `npm ci`
+   - **Start command** : `npm start`
+4. Ajoute les variables d'environnement suivantes :
+
+| Variable | Valeur | Note |
+|---|---|---|
+| `NODE_ENV` | `production` | Active SSL PostgreSQL côté serveur |
+| `DATABASE_URL` | l'URL de la base Render | Référence la base créée à l'étape 1 |
+| `JWT_SECRET` | une très longue phrase aléatoire | Ex. : `openssl rand -hex 48` |
+| `CLIENT_ORIGIN` | `*` (démo) ou ton domaine | `*` bloque les cookies cross-origin ; mets ton domaine en prod |
+| `ADMIN_EMAILS` | `ton-email@gmail.com` | E-mails séparés par des virgules |
+| `TRUST_PROXY` | `1` | Requis derrière le proxy de Render |
+| `DEMO_TOPUP` | `false` (ou vide) | **Jamais** `true` en production : autoriserait d'auto-créditer des jetons |
+
+### Limites du plan Free à connaître
+
+- Le service web **se met en veille après 15 min sans trafic** ; au premier clic, le redémarrage prend ~1 min.
+- La base PostgreSQL gratuite **expire au bout de 30 jours** (elle est alors supprimée). Pour une production durable, passe la base en plan payant ou prévois une migration.
+- Le disque est **éphémère** : les données doivent être en base (c'est le cas ici), pas dans des fichiers locaux. Les images envoyées sont stockées en base, donc elles sont conservées.
+- 750 heures d'instance gratuites par mois pour tous les services web gratuits.
+
+### Avant un lancement public
+
+- Mets `CLIENT_ORIGIN` sur ton vrai domaine (ex. `https://ton-domaine.com`) et ajoute-le dans le service Render.
+- Vérifie que `DEMO_TOPUP` est bien vide/false et que `ADMIN_EMAILS` contient ton e-mail.
+- Ajoute les pages légales (déjà présentes : `/conditions.html`, `/confidentialite.html`, `/regles.html`) et une politique complète si nécessaire.
 
 ---
 
