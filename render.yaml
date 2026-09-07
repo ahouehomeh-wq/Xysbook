@@ -3,8 +3,10 @@ services:
     name: xys-book-web
     runtime: node
     plan: free
-    buildCommand: npm install
+    branch: main
+    buildCommand: npm ci
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
